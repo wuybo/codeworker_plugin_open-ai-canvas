@@ -23,29 +23,61 @@ Code Worker 主进程
   │    └─ fetch → localhost API（127.0.0.1:17389）
   └─ 启动 service/ecom-cs-service.exe
            ├─ HTTP 服务（localhost，token 认证）
-           ├─ CDP Manager（Chrome DevTools Protocol）
-           │    └─ discover targets → attach → evaluate（注入 JS）
-           └─ Platform Adapters（per-platform DOM 选择器 + 收发脚本）
+           ├─ Browser Launcher（自动启动 Chrome/Edge 调试实例，专属端口+独立 profile）
+           ├─ CDP Manager（WebSocket + Runtime.evaluate 注入 JS）
+           └─ Platform Adapters（per-platform 页面URL / DOM 选择器 / 收发脚本）
 ```
 
 ## 工作原理
 
-### 不是 API，是 CDP 注入
+### 不是 API，是 CDP 注入 + 网页版工作台
 
-淘宝/拼多多/抖音等电商平台**不向个人开放客服消息 API**。本插件（和 ChatGPT-On-CS 一样）通过 **Chrome DevTools Protocol** 实现：
+淘宝/拼多多/抖音等电商平台**不向个人开放客服消息 API**。本插件采用 ChatGPT-On-CS 相同的底层思路：
 
-1. 商家客户端（千牛/抖店/拼多多等）内嵌 Chromium WebView
-2. 以 `--remote-debugging-port=9222` 启动客户端后，可通过 CDP 协议 attach
-3. 使用 `Runtime.evaluate` 注入 JS 脚本：读取聊天 DOM 拿买家消息、模拟输入/点击发送回复
+1. 点击"连接"时，插件**自动启动一个专属 Chrome/Edge 实例**（带 `--remote-debugging-port`，独立 profile 目录）
+2. 自动打开该平台**网页版客服工作台**（千牛网页版、飞鸽、拼多多商家后台、京麦、快手小店、小红书千帆）
+3. 如果页面已打开 → 直接**激活置顶**并 attach
+4. 通过 CDP 的 `Runtime.evaluate` 注入 JS 脚本：读取聊天 DOM 拿买家消息、模拟输入/点击发送回复
+
+### 平台端口分配
+
+每个平台一个独立调试端口和浏览器 profile（登录态互不干扰，可多平台同时挂接）：
+
+| 平台 | 调试端口 | 客服页面 |
+|---|---|---|
+| 千牛 | 基础端口+0 (9222) | work.taobao.com |
+| 抖店飞鸽 | +1 (9223) | im.jinritemai.com |
+| 拼多多 | +2 (9224) | mms.pinduoduo.com/chat |
+| 京东 | +3 (9225) | jmw.jd.cn |
+| 快手小店 | +4 (9226) | im.kwaixiaodian.com |
+| 小红书 | +5 (9227) | qian.xiaohongshu.com |
+
+### AI 回复（复用 Code Worker 自带模型）
+
+两种模式都通过宿主桥接调用 **Code Worker 自身的 AI**，不需要单独配置任何模型 API Key：
+
+- **人工模式**：点"✨ AI 起草" → `ai.generate` 生成回复 → 你确认后手动发送
+- **自动模式**：service 检测到买家消息 → 标记待回复 → UI 自动调 `ai.generate` → 延迟数秒自动发送（每次生成宿主会弹确认框）
 
 ### 各平台适配
 
 每个平台有独立的适配器（`service/platforms.js`），包含：
-- 目标 WebView 的 URL/标题匹配规则
+- 目标页面的 URL 匹配规则 + 网页版客服入口 URL
 - 读取消息的 DOM 选择器
 - 发送消息的输入框/按钮选择器
 
-> **注意**：各平台客户端 WebView 的 DOM 结构随版本更新会变化，选择器需要持续维护。
+> **注意**：各平台网页的 DOM 结构随版本更新会变化，选择器需要持续维护。
+> 首次使用需在弹出的浏览器里登录商家账号（独立 profile，登录态会保留）。
+
+## 回归测试
+
+改完选择器/核心代码后可跑内置测试脚本验证链路：
+
+```bash
+cd service
+node scripts/smoke-test.js ./ecom-cs-service.exe       # HTTP API 冒烟
+node scripts/adapter-e2e-test.js ./ecom-cs-service.exe # 适配器全链路（百度模拟）
+```
 
 ## 目录结构
 
@@ -60,12 +92,16 @@ codeworker_plugin_open-ai-canvas/
 │  └─ style.css              # UI 样式
 ├─ service/
 │  ├─ index.js               # 后台服务入口（HTTP + 调度）
-│  ├─ cdp.js                 # CDP 管理器（DevTools Protocol 通信）
-│  ├─ platforms.js           # 平台适配器（per-platform DOM 选择器）
+│  ├─ cdp.js                 # CDP 管理器（WebSocket + Runtime.evaluate）
+│  ├─ browser-launcher.js    # 浏览器启动器（自动启动调试实例/打开/激活页面）
+│  ├─ platforms.js           # 平台适配器（per-platform URL/选择器/脚本）
 │  ├─ package.json           # 服务包定义
 │  ├─ sea-config.json        # Node SEA 打包配置
 │  └─ scripts/
-│     └─ build-sea.js        # SEA 打包脚本（生成 .exe）
+│     ├─ bundle.js           # 多文件→单文件 bundler
+│     ├─ build-sea.js        # SEA 打包脚本（生成 .exe）
+│     ├─ smoke-test.js       # HTTP API 冒烟测试
+│     └─ adapter-e2e-test.js # 适配器全链路测试
 └─ scripts/
    └─ build.ps1              # 一键打包脚本（构建 + 打 .cwplugin）
 ```
@@ -107,12 +143,13 @@ node scripts/build-sea.js
 ### 使用步骤
 
 1. 安装插件后，打开侧栏"客服助手"
-2. 在"设置"页配置 CDP 调试端口（默认 9222）
-3. 以调试模式启动商家客户端（需加 `--remote-debugging-port=9222` 参数）
-4. 在"平台管理"页点击"连接"对应平台
-5. 在"收件箱"查看收到的消息
-6. 点击"AI 起草"让 Code Worker AI 生成回复，或手动输入后点"发送"
-7. 可选：开启"自动回复"开关
+2. 在"平台管理"页点击对应平台的"连接"按钮
+   - 插件会**自动启动专属调试浏览器并打开该平台网页版客服工作台**
+   - 首次使用需在弹出的浏览器窗口中登录商家账号（独立 profile，登录态保留）
+   - 页面若已打开，会直接激活置顶
+3. 在"收件箱"查看收到的买家消息
+4. 点击"✨ AI 起草"让 Code Worker AI 生成回复（复用宿主模型，无需配 API Key），确认后点"发送"
+5. 可选：开启"自动回复"——收到新消息后自动调用 AI 生成并发送（每次生成宿主会弹确认框）
 
 ## 许可证
 
@@ -135,7 +172,7 @@ node scripts/build-sea.js
 
 ## ⚠️ 合规风险提示
 
-本插件通过 CDP 协议挂接电商商家客户端读取/发送消息，属于第三方自动化工具。各电商平台（淘宝/拼多多/抖音等）用户协议**可能禁止此类行为**，存在**封店/封号风险**。
+本插件通过 CDP 协议自动挂接电商网页版商家工作台读取/发送消息，属于第三方自动化工具。各电商平台（淘宝/拼多多/抖音等）用户协议**可能禁止此类行为**，存在**封店/封号风险**。
 
 建议：
 - 优先使用"人工确认"模式（AI 起草后人工审核发送）

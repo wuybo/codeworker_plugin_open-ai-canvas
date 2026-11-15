@@ -359,12 +359,12 @@ async function processPendingAiReplies() {
 
 // ========== 平台管理 ==========
 const PLATFORMS = [
-  { id: "qianniu", name: "千牛（淘宝/天猫）", desc: "挂接千牛工作台 WebView", icon: "🛒" },
-  { id: "douyin", name: "抖店（飞鸽）", desc: "挂接抖店飞鸽客服客户端", icon: "🎵" },
-  { id: "pdd", name: "拼多多商家版", desc: "挂接拼多多商家客服客户端", icon: "📋" },
-  { id: "jd", name: "京东（京麦/咚咚）", desc: "挂接京麦客服客户端", icon: "📦" },
-  { id: "kuaishou", name: "快手小店", desc: "挂接快手小店客服客户端", icon: "⚡" },
-  { id: "xhs", name: "小红书商家", desc: "挂接小红书商家后台客服", icon: "📕" },
+  { id: "qianniu", name: "千牛（淘宝/天猫）", desc: "自动启动专属浏览器实例并打开淘宝客服工作台；未启动会启动，已打开会置顶", icon: "🛒" },
+  { id: "douyin", name: "抖店（飞鸽）", desc: "自动打开飞鸽客服工作台网页版，独立端口与登录态", icon: "🎵" },
+  { id: "pdd", name: "拼多多商家版", desc: "自动打开拼多多商家客服网页版，独立端口与登录态", icon: "📋" },
+  { id: "jd", name: "京东（京麦/咚咚）", desc: "自动打开京麦工作台（含咚咚客服），独立端口与登录态", icon: "📦" },
+  { id: "kuaishou", name: "快手小店", desc: "自动打开快手小店客服网页版，独立端口与登录态", icon: "⚡" },
+  { id: "xhs", name: "小红书商家", desc: "自动打开小红书千帆商家后台，独立端口与登录态", icon: "📕" },
 ];
 
 async function renderPlatforms() {
@@ -382,6 +382,7 @@ async function renderPlatforms() {
     const connected = st?.connected;
     const badgeCls = connected ? "badge-on" : "badge-off";
     const badgeText = connected ? "已连接" : "未连接";
+    const portInfo = st?.debugPort ? `<div class="pc-info">调试端口: ${st.debugPort}</div>` : "";
     return `
       <div class="platform-card">
         <div class="pc-header">
@@ -389,6 +390,7 @@ async function renderPlatforms() {
           <span class="pc-status badge ${badgeCls}">${badgeText}</span>
         </div>
         <div class="pc-info">${p.desc}</div>
+        ${portInfo}
         ${st?.error ? `<div class="pc-info" style="color:var(--danger)">${esc(st.error)}</div>` : ""}
         <div class="pc-actions">
           <button class="btn btn-sm" data-action="connect" data-platform="${p.id}">连接</button>

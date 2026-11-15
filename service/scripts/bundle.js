@@ -1,5 +1,5 @@
 /**
- * 简易 JS bundler — 将 index.js + cdp.js + platforms.js 合并成单文件 sea-entry.js
+ * 简易 JS bundler — 将 index.js + cdp.js + platforms.js + browser-launcher.js 合并成单文件 sea-entry.js
  * 用于 Node SEA 打包
  *
  * 用法: node scripts/bundle.js
@@ -15,11 +15,15 @@ const SERVICE_DIR = path.resolve(__dirname, '..');
 const indexSrc = fs.readFileSync(path.join(SERVICE_DIR, 'index.js'), 'utf-8');
 const cdpSrc = fs.readFileSync(path.join(SERVICE_DIR, 'cdp.js'), 'utf-8');
 const platformsSrc = fs.readFileSync(path.join(SERVICE_DIR, 'platforms.js'), 'utf-8');
+const launcherSrc = fs.readFileSync(path.join(SERVICE_DIR, 'browser-launcher.js'), 'utf-8');
 
-// 替换 index.js 中的 require 调用
-const indexPatched = indexSrc
-  .replace(/require\(['"]\.\/cdp['"]\)/g, "__require('./cdp')")
-  .replace(/require\(['"]\.\/platforms['"]\)/g, "__require('./platforms')");
+// 替换内部 require 调用
+function patch(src) {
+  return src
+    .replace(/require\(['"]\.\/cdp['"]\)/g, "__require('./cdp')")
+    .replace(/require\(['"]\.\/platforms['"]\)/g, "__require('./platforms')")
+    .replace(/require\(['"]\.\/browser-launcher['"]\)/g, "__require('./browser-launcher')");
+}
 
 // 构造 bundle
 const bundle = `'use strict';
@@ -30,16 +34,25 @@ const bundle = `'use strict';
 const __modules = {};
 const __cache = {};
 function __require(name) {
-  if (__cache[name]) return __cache[name].exports;
-  const mod = { exports: {} };
-  __cache[name] = mod;
-  if (__modules[name]) __modules[name](mod, mod.exports, __require);
-  return mod.exports;
+  if (__modules[name]) {
+    if (__cache[name]) return __cache[name].exports;
+    const mod = { exports: {} };
+    __cache[name] = mod;
+    __modules[name](mod, mod.exports, __require);
+    return mod.exports;
+  }
+  // 内置模块（http/path/child_process/crypto 等）直接走原生 require
+  return require(name);
 }
 
 // === cdp.js ===
 __modules['./cdp'] = function(module, exports, require) {
 ${cdpSrc}
+};
+
+// === browser-launcher.js ===
+__modules['./browser-launcher'] = function(module, exports, require) {
+${launcherSrc}
 };
 
 // === platforms.js ===
@@ -48,7 +61,7 @@ ${platformsSrc}
 };
 
 // === index.js (入口) ===
-${indexPatched}
+${patch(indexSrc)}
 
 // 入口已由 index.js 的 start() 自动执行
 `;

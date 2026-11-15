@@ -217,8 +217,14 @@ async function handleRequest(req, res) {
     // ---- 平台状态 ----
     if (p === '/api/platforms/status' && method === 'GET') {
       const statuses = {};
+      const basePort = state.settings.cdpPort || 9222;
+      const offsets = { qianniu: 0, douyin: 1, pdd: 2, jd: 3, kuaishou: 4, xhs: 5 };
       for (const [id, info] of state.platforms) {
-        statuses[id] = { connected: info.connected, error: info.error || null };
+        statuses[id] = {
+          connected: info.connected,
+          error: info.error || null,
+          debugPort: basePort + (offsets[id] || 0),
+        };
       }
       return sendJSON(res, 200, { statuses });
     }
@@ -344,8 +350,12 @@ async function pollMessages() {
         }
       }
     } catch (err) {
-      // 静默处理轮询错误，避免刷屏
-      if (err.message !== 'target not connected') {
+      if (err.message === 'target not connected') {
+        // 页面被关闭/刷新失败 → 标记掉线，UI 平台管理页会显示状态
+        info.connected = false;
+        info.error = '聊天页面已关闭或未找到，请重新点击「连接」';
+        log(`平台 ${platId} 掉线: ${err.message}`);
+      } else {
         log(`轮询 ${platId} 出错: ${err.message}`);
       }
     }

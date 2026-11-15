@@ -3,11 +3,10 @@
  * 基于 ChatGPT-On-CS（AGPL-3.0）的 CDP 注入思路改写
  *
  * 原理：
- *   各电商平台商家客户端（千牛/抖店飞鸽/拼多多商家版等）内嵌 Chromium WebView，
- *   通过 Chrome DevTools Protocol 的 remote debugging 可以 attach 到这些 WebView，
- *   然后用 Runtime.evaluate 注入 JS 脚本读取聊天 DOM / 模拟输入发送消息。
+ *   以 --remote-debugging-port 启动 Chrome/Edge，打开各平台网页版商家工作台，
+ *   通过 CDP WebSocket 用 Runtime.evaluate 注入 JS 脚本读取聊天 DOM / 模拟输入发送消息。
  *
- * 本模块零依赖，使用 Node.js 内置 http 模块实现 CDP WebSocket 通信。
+ * 通信方式：WebSocket（Node >= 21 内置 global WebSocket，零依赖）。
  *
  * 许可证：AGPL-3.0
  */
@@ -15,53 +14,50 @@
 'use strict';
 
 const http = require('http');
-const crypto = require('crypto');
+
+// Node 22 内置 WebSocket（undici 实现）；若运行环境缺失则给出明确错误
+const WS = typeof WebSocket !== 'undefined' ? WebSocket : null;
 
 class CDPManager {
   constructor(options = {}) {
-    this.cdpPort = options.port || 9222;       // CDP 远程调试端口
-    this.targets = new Map();                   // targetId → target info
-    this.sessions = new Map();                  // targetId → sessionId
+    this.defaultPort = options.port || 9222;
   }
 
   /**
-   * 发现 CDP 调试目标
-   * GET http://127.0.0.1:{cdpPort}/json 返回所有打开的页面/WebView 列表
+   * 通用 HTTP GET（JSON）
    */
-  async discoverTargets() {
+  _httpJson(port, pathStr) {
     return new Promise((resolve, reject) => {
       const req = http.get({
         hostname: '127.0.0.1',
-        port: this.cdpPort,
-        path: '/json',
-        headers: { 'Host': 'localhost' },
+        port,
+        path: pathStr,
+        headers: { Host: `127.0.0.1:${port}` },
       }, (res) => {
         let data = '';
         res.on('data', chunk => data += chunk);
         res.on('end', () => {
-          try {
-            const targets = JSON.parse(data);
-            resolve(targets);
-          } catch (e) {
-            reject(new Error(`CDP /json 解析失败: ${e.message}`));
-          }
+          try { resolve(JSON.parse(data)); }
+          catch (e) { reject(new Error(`CDP ${pathStr} 解析失败: ${e.message}`)); }
         });
       });
-      req.on('error', (e) => {
-        reject(new Error(`无法连接 CDP 端口 ${this.cdpPort}: ${e.message}。请确保商家客户端以 --remote-debugging-port=${this.cdpPort} 启动。`));
-      });
-      req.setTimeout(3000, () => {
-        req.destroy();
-        reject(new Error('CDP 连接超时'));
-      });
+      req.on('error', (e) => reject(new Error(`无法连接 CDP 端口 ${port}: ${e.message}`)));
+      req.setTimeout(3000, () => { req.destroy(); reject(new Error('CDP 连接超时')); });
     });
+  }
+
+  /**
+   * 发现指定端口上的 CDP 调试目标
+   */
+  async discoverTargets(port) {
+    return this._httpJson(port || this.defaultPort, '/json');
   }
 
   /**
    * 查找匹配 URL/标题的目标
    */
-  async findTarget(filter) {
-    const targets = await this.discoverTargets();
+  async findTarget(filter, port) {
+    const targets = await this.discoverTargets(port);
     for (const t of targets) {
       if (t.type !== 'page') continue;
       if (filter.url && t.url && t.url.includes(filter.url)) return t;
@@ -75,83 +71,11 @@ class CDPManager {
   }
 
   /**
-   * 在目标页面上执行 JS 表达式并返回结果
-   * 使用 CDP 的 Runtime.evaluate 命令
-   *
-   * 注意：完整实现需要 WebSocket 连接到 CDP endpoint。
-   * 这里使用 HTTP /json/evaluate 简化方案（Chromium >= vxx 支持），
-   * 如果不支持则回退到通过 ws 协议的完整实现。
+   * 检查指定端口 CDP 是否可用
    */
-  async evaluate(targetId, expression) {
-    // 方案1: 尝试通过 WebSocket 发送 CDP 命令
-    // 由于 Node.js 内置没有 WebSocket 客户端（Node 22 已有实验性 WebSocket），
-    // 我们使用 HTTP-based 的 evaluate 方式
-    return this._evaluateViaHTTP(expression);
-  }
-
-  /**
-   * 通过 HTTP /json/evaluate 执行 JS（如果 Chromium 支持）
-   */
-  async _evaluateViaHTTP(expression) {
-    return new Promise((resolve, reject) => {
-      // 编码表达式
-      const encoded = Buffer.from(expression).toString('base64');
-      const req = http.get({
-        hostname: '127.0.0.1',
-        port: this.cdpPort,
-        path: `/json/evaluate?expression=${encodeURIComponent(encoded)}`,
-        headers: { 'Host': 'localhost' },
-      }, (res) => {
-        let data = '';
-        res.on('data', chunk => data += chunk);
-        res.on('end', () => {
-          try {
-            const result = JSON.parse(data);
-            resolve(result);
-          } catch (e) {
-            // 可能返回的是纯文本结果
-            resolve({ result: { value: data } });
-          }
-        });
-      });
-      req.on('error', (e) => {
-        reject(new Error(`CDP evaluate 失败: ${e.message}`));
-      });
-      req.setTimeout(5000, () => {
-        req.destroy();
-        reject(new Error('CDP evaluate 超时'));
-      });
-    });
-  }
-
-  /**
-   * 获取 CDP 版本信息
-   */
-  async getVersion() {
-    return new Promise((resolve, reject) => {
-      const req = http.get({
-        hostname: '127.0.0.1',
-        port: this.cdpPort,
-        path: '/json/version',
-        headers: { 'Host': 'localhost' },
-      }, (res) => {
-        let data = '';
-        res.on('data', chunk => data += chunk);
-        res.on('end', () => {
-          try { resolve(JSON.parse(data)); } catch (e) { reject(e); }
-        });
-      });
-      req.on('error', reject);
-      req.setTimeout(3000, () => { req.destroy(); reject(new Error('timeout')); });
-    });
-  }
-
-  /**
-   * 检查 CDP 是否可用
-   */
-  async isAvailable() {
+  async isAvailable(port) {
     try {
-      const version = await this.getVersion();
+      await this._httpJson(port || this.defaultPort, '/json/version');
       return true;
     } catch (e) {
       return false;
@@ -159,23 +83,99 @@ class CDPManager {
   }
 
   /**
-   * 在目标页面注入 JS 脚本（通过 evaluate）
-   * @param {Object} target - CDP target 对象（含 webSocketDebuggerUrl）
-   * @param {string} script - 要注入的 JS 代码
-   * @returns {Promise<any>} 执行结果
+   * 在目标页面（tab）上执行 JS 表达式并返回结果
+   * 使用 CDP WebSocket + Runtime.evaluate
+   *
+   * @param {object} target - /json 返回的 target 对象（含 webSocketDebuggerUrl）
+   * @param {string} expression - JS 表达式
+   * @param {number} timeoutMs - 超时
+   * @returns {Promise<any>} - 求值结果（returnByValue）
    */
-  async injectScript(target, script) {
-    // 使用 evaluate 注入并执行
-    const result = await this._evaluateViaHTTP(script);
-    return result;
+  evaluateOn(target, expression, timeoutMs = 8000) {
+    return new Promise((resolve, reject) => {
+      if (!WS) {
+        reject(new Error('当前运行环境不支持 WebSocket（需要 Node >= 21）'));
+        return;
+      }
+      if (!target || !target.webSocketDebuggerUrl) {
+        reject(new Error('target 缺少 webSocketDebuggerUrl'));
+        return;
+      }
+
+      // Chrome 返回的 URL 可能是 ws://localhost:{port}/… → undici 会解析到 IPv6 ::1 而连不上
+      // 统一改写 host 为 127.0.0.1
+      let wsUrl = target.webSocketDebuggerUrl;
+      try {
+        const u = new URL(wsUrl);
+        if (u.hostname === 'localhost') {
+          u.hostname = '127.0.0.1';
+          wsUrl = u.toString();
+        }
+      } catch (e) { /* 保持原样 */ }
+      const ws = new WS(wsUrl);
+      let settled = false;
+      const timer = setTimeout(() => {
+        if (!settled) { settled = true; try { ws.close(); } catch (e) {} reject(new Error('CDP evaluate 超时')); }
+      }, timeoutMs);
+
+      const finish = (fn, arg) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        try { ws.close(); } catch (e) {}
+        fn(arg);
+      };
+
+      ws.addEventListener('error', () => finish(reject, new Error('CDP WebSocket 连接失败')));
+      ws.addEventListener('close', () => finish(reject, new Error('CDP WebSocket 已关闭')));
+
+      ws.addEventListener('open', () => {
+        try {
+          ws.send(JSON.stringify({
+            id: 1,
+            method: 'Runtime.evaluate',
+            params: {
+              expression,
+              returnByValue: true,
+              awaitPromise: true,
+              timeout: timeoutMs - 500,
+            },
+          }));
+        } catch (e) {
+          finish(reject, e);
+        }
+      });
+
+      ws.addEventListener('message', (event) => {
+        let msg;
+        try { msg = JSON.parse(event.data); } catch (e) { return; }
+        if (msg.id !== 1) return;
+        if (msg.error) {
+          finish(reject, new Error(msg.error.message || 'CDP evaluate 失败'));
+          return;
+        }
+        const r = msg.result;
+        if (r && r.exceptionDetails) {
+          finish(reject, new Error(r.exceptionDetails.exception && r.exceptionDetails.exception.description || '页面脚本执行异常'));
+          return;
+        }
+        finish(resolve, r && r.result ? r.result.value : undefined);
+      });
+    });
   }
 
   /**
-   * 关闭所有会话
+   * 兼容旧接口：注入脚本执行
+   */
+  async injectScript(target, script) {
+    return this.evaluateOn(target, script);
+  }
+
+  /**
+   * 关闭所有会话（每次 evaluate 用完即断，无需清理）
    */
   async closeAll() {
-    this.sessions.clear();
-    this.targets.clear();
+    // no-op
   }
 }
 

@@ -6,6 +6,7 @@
  *   1. 通过 CDP 发现并 attach 到对应平台商家客户端的聊天 WebView
  *   2. 注入 JS 脚本读取买家消息（DOM 选择器）
  *   3. 注入 JS 脚本模拟输入并发送回复
+ *   4. smartConnect: 自动启动浏览器/打开/激活客服页面
  *
  * 注意：各平台客户端 WebView 的 DOM 结构会随版本更新而变化，
  * 选择器需要持续维护。这里给出框架和初始选择器模板。
@@ -14,6 +15,9 @@
  */
 
 'use strict';
+
+const { smartConnect, checkCdpPort, findTab, activateTab, openTab } = require('./browser-launcher');
+const path = require('path');
 
 /**
  * 基础平台适配器
@@ -28,17 +32,45 @@ class BaseAdapter {
   }
 
   /**
-   * 连接：发现目标 WebView
+   * 每个平台一个独立调试端口（基础端口 + 平台偏移），
+   * 独立 profile 目录 → 各平台登录态互不干扰，可多平台同时挂接。
+   */
+  get portOffset() { return 0; }
+  get debugPort() { return (this.cdp.defaultPort || 9222) + this.portOffset; }
+
+  /**
+   * 连接：智能启动浏览器 → 打开/激活客服页面 → attach
+   *
+   * 流程：
+   *   1. 检查该平台专属 CDP 端口是否可用
+   *   2. 不可用 → 自动启动 Chrome/Edge 独立实例（专属端口+专属 profile+目标URL）
+   *   3. 可用后 → 查找是否已打开目标平台页面
+   *   4. 没打开 → 自动打开新标签页
+   *   5. 已打开 → 激活置顶
+   *   6. attach 到目标
    */
   async connect() {
-    const cdpOk = await this.cdp.isAvailable();
-    if (!cdpOk) {
-      throw new Error(`CDP 端口 ${this.cdp.cdpPort} 不可用。请以 --remote-debugging-port=${this.cdp.cdpPort} 启动${this.platformName}客户端。`);
+    // 智能连接：自动启动浏览器 + 打开/激活页面
+    const result = await smartConnect({
+      cdpPort: this.debugPort,
+      platformUrl: this.platformUrl,
+      targetFilter: this.targetFilter,
+      profileDir: this.profileDir,
+    });
+
+    if (!result.ok) {
+      throw new Error(result.error || `${this.platformName}连接失败`);
     }
 
-    this.target = await this.cdp.findTarget(this.targetFilter);
+    // smartConnect 已经找到/打开了目标页面
+    this.target = result.tab;
     if (!this.target) {
-      throw new Error(`未找到${this.platformName}聊天页面。请确保${this.platformName}客户端已打开并进入客服聊天窗口。`);
+      // 回退：端口已就绪，用 CDP 再查一次
+      this.target = await this.cdp.findTarget(this.targetFilter, this.debugPort);
+    }
+
+    if (!this.target) {
+      throw new Error(`未找到${this.platformName}聊天页面，请在打开的浏览器中进入客服工作台后重试。`);
     }
 
     this.connected = true;
@@ -53,12 +85,26 @@ class BaseAdapter {
   }
 
   /**
+   * 刷新 target（页面刷新后旧 webSocketDebuggerUrl 会失效）
+   */
+  async ensureTarget() {
+    const fresh = await this.cdp.findTarget(this.targetFilter, this.debugPort);
+    if (fresh) this.target = fresh;
+    return this.target;
+  }
+
+  /**
    * 获取新消息
    * @returns {Promise<Array<{convId, from, content, timestamp, buyerName}>>}
    */
   async fetchNewMessages() {
-    if (!this.connected || !this.target) return [];
+    if (!this.connected) return [];
     try {
+      await this.ensureTarget();
+      if (!this.target) {
+        this.connected = false;
+        throw new Error('target not connected');
+      }
       const script = this.buildFetchScript();
       const result = await this.cdp.injectScript(this.target, script);
       const messages = this.parseFetchResult(result);
@@ -69,7 +115,7 @@ class BaseAdapter {
       }
       return newMsgs;
     } catch (e) {
-      if (e.message.includes('target')) throw e;
+      if (e.message === 'target not connected') throw e;
       return [];
     }
   }
@@ -78,8 +124,12 @@ class BaseAdapter {
    * 发送消息
    */
   async sendMessage(conv, content) {
-    if (!this.connected || !this.target) {
+    if (!this.connected) {
       throw new Error(`${this.platformName}未连接`);
+    }
+    await this.ensureTarget();
+    if (!this.target) {
+      throw new Error(`${this.platformName}聊天页面未找到，请确认页面已打开`);
     }
     const script = this.buildSendScript(content);
     await this.cdp.injectScript(this.target, script);
@@ -88,6 +138,8 @@ class BaseAdapter {
   // 子类覆盖
   get platformName() { return this.platformId; }
   get targetFilter() { return {}; }
+  get platformUrl() { return null; }     // 各平台网页版客服 URL
+  get profileDir() { return null; }       // 独立浏览器 profile 目录
 
   /**
    * 构建读取消息的 JS 脚本
@@ -135,9 +187,18 @@ class BaseAdapter {
 // ========== 千牛（淘宝/天猫）==========
 class QianniuAdapter extends BaseAdapter {
   get platformName() { return '千牛'; }
+  get portOffset() { return 0; }
 
   get targetFilter() {
-    return { urlRegex: 'qianniu|taobao|tmall|workbench' };
+    return { urlRegex: 'work\\.taobao|qianniu|wangwang' };
+  }
+
+  get platformUrl() {
+    return 'https://work.taobao.com/';  // 千牛网页版客服工作台
+  }
+
+  get profileDir() {
+    return path.join(process.env.LOCALAPPDATA || '.', 'ecom-cs-bot-qianniu');
   }
 
   buildFetchScript() {
@@ -190,9 +251,18 @@ class QianniuAdapter extends BaseAdapter {
 // ========== 抖店飞鸽 ==========
 class DouyinAdapter extends BaseAdapter {
   get platformName() { return '抖店飞鸽'; }
+  get portOffset() { return 1; }
 
   get targetFilter() {
-    return { urlRegex: 'feige|douyin|jinritemai|im' };
+    return { urlRegex: 'feige|jinritemai' };
+  }
+
+  get platformUrl() {
+    return 'https://im.jinritemai.com/pc_seller_v2/main/workspace';  // 飞鸽网页版
+  }
+
+  get profileDir() {
+    return path.join(process.env.LOCALAPPDATA || '.', 'ecom-cs-bot-douyin');
   }
 
   buildFetchScript() {
@@ -242,9 +312,18 @@ class DouyinAdapter extends BaseAdapter {
 // ========== 拼多多 ==========
 class PddAdapter extends BaseAdapter {
   get platformName() { return '拼多多'; }
+  get portOffset() { return 2; }
 
   get targetFilter() {
-    return { urlRegex: 'pinduoduo|pdd|mms' };
+    return { urlRegex: 'mms\\.pinduoduo|pddchat|yangkeduo' };
+  }
+
+  get platformUrl() {
+    return 'https://mms.pinduoduo.com/chat/index';  // 拼多多商家客服网页版
+  }
+
+  get profileDir() {
+    return path.join(process.env.LOCALAPPDATA || '.', 'ecom-cs-bot-pdd');
   }
 
   buildFetchScript() {
@@ -294,9 +373,18 @@ class PddAdapter extends BaseAdapter {
 // ========== 京东（京麦/咚咚）==========
 class JdAdapter extends BaseAdapter {
   get platformName() { return '京东咚咚'; }
+  get portOffset() { return 3; }
 
   get targetFilter() {
-    return { urlRegex: 'jd|jingdong|dongdong|jmes' };
+    return { urlRegex: 'jdwshop|shop\\.jd|dongdong|jmcm|jingmai' };
+  }
+
+  get platformUrl() {
+    return 'https://jmw.jd.cn/';  // 京麦工作台（含咚咚客服）
+  }
+
+  get profileDir() {
+    return path.join(process.env.LOCALAPPDATA || '.', 'ecom-cs-bot-jd');
   }
 
   buildFetchScript() {
@@ -346,9 +434,18 @@ class JdAdapter extends BaseAdapter {
 // ========== 快手小店 ==========
 class KuaishouAdapter extends BaseAdapter {
   get platformName() { return '快手小店'; }
+  get portOffset() { return 4; }
 
   get targetFilter() {
-    return { urlRegex: 'kuaishou|ks|kwai' };
+    return { urlRegex: 'kwaixiaodian|im\\.kwaixiaodian' };
+  }
+
+  get platformUrl() {
+    return 'https://im.kwaixiaodian.com/';  // 快手小店客服
+  }
+
+  get profileDir() {
+    return path.join(process.env.LOCALAPPDATA || '.', 'ecom-cs-bot-kuaishou');
   }
 
   buildFetchScript() {
@@ -398,9 +495,18 @@ class KuaishouAdapter extends BaseAdapter {
 // ========== 小红书 ==========
 class XhsAdapter extends BaseAdapter {
   get platformName() { return '小红书'; }
+  get portOffset() { return 5; }
 
   get targetFilter() {
-    return { urlRegex: 'xiaohongshu|xhs|ark' };
+    return { urlRegex: 'xiaohongshu|qian\\.xiaohongshu' };
+  }
+
+  get platformUrl() {
+    return 'https://qian.xiaohongshu.com/';  // 小红书千帆商家后台
+  }
+
+  get profileDir() {
+    return path.join(process.env.LOCALAPPDATA || '.', 'ecom-cs-bot-xhs');
   }
 
   buildFetchScript() {
