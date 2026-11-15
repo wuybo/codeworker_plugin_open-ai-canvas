@@ -281,13 +281,81 @@ $("#auto-reply-toggle")?.addEventListener("change", async (e) => {
     });
     await callHost("app.notification.show", {
       title: enabled ? "自动回复已开启" : "自动回复已关闭",
-      body: enabled ? "收到买家消息后将自动调用 AI 生成并发送回复" : "需手动发送回复",
+      body: enabled ? "收到买家消息后将自动调用 Code Worker AI 生成并发送回复" : "需手动发送回复",
     });
   } catch (err) {
     e.target.checked = !enabled;
     await callHost("app.notification.show", { title: "操作失败", body: err.message });
   }
 });
+
+// ========== 自动 AI 回复处理器 ==========
+// 当自动回复开启时，轮询检查是否有待 AI 回复的会话，
+// 自动调用 Code Worker 的 ai.generate 生成回复并发送
+let aiReplyProcessing = false;
+
+async function processPendingAiReplies() {
+  if (aiReplyProcessing) return; // 防止并发处理
+  if (!settings) return;
+
+  try {
+    const data = await callService("/api/pending-ai-replies");
+    const pending = data.pending || [];
+    if (pending.length === 0) return;
+
+    aiReplyProcessing = true;
+
+    for (const item of pending) {
+      // 用 Code Worker AI 生成回复
+      const contextParts = item.messages.map(m =>
+        `${m.from === "buyer" ? "买家" : "客服"}: ${m.content}`
+      ).join("\n");
+
+      const knowledgeText = await getKnowledgeText();
+      const styleMap = { friendly: "友好亲切", professional: "专业正式", concise: "简洁高效" };
+      const style = styleMap[settings?.replyStyle] || "友好亲切";
+      const delay = settings?.autoReplyDelay || 3;
+
+      const prompt = [
+        `你是一个电商客服助手，请根据以下对话上下文生成一条回复。`,
+        `回复风格：${style}`,
+        knowledgeText ? `\n参考知识库：\n${knowledgeText}` : "",
+        `\n对话上下文：\n${contextParts}`,
+        `\n请直接输出回复内容，不要加解释。回复不超过200字。`,
+      ].join("");
+
+      try {
+        const result = await callHost("ai.generate", {
+          title: `自动回复 · ${item.buyerName}`,
+          prompt,
+        });
+
+        if (result?.text) {
+          const replyText = result.text.trim();
+          // 延迟发送（模拟人工思考和输入）
+          await new Promise(r => setTimeout(r, delay * 1000));
+
+          // 自动发送
+          await callService(`/api/conversations/${item.convId}/reply`, {
+            method: "POST",
+            body: JSON.stringify({ content: replyText, aiGenerated: true }),
+          });
+          await callHost("app.notification.show", {
+            title: `AI 自动回复 → ${item.buyerName}`,
+            body: replyText.substring(0, 80),
+          });
+        }
+      } catch (aiErr) {
+        // AI 生成失败（用户可能拒绝了确认），降级为知识库匹配
+        console.warn("AI 自动回复失败:", aiErr.message);
+      }
+    }
+  } catch (e) {
+    // 静默处理
+  } finally {
+    aiReplyProcessing = false;
+  }
+}
 
 // ========== 平台管理 ==========
 const PLATFORMS = [
@@ -419,7 +487,11 @@ $("#btn-restart-service")?.addEventListener("click", async () => {
 function startPolling() {
   stopPolling();
   fetchConversations();
-  pollTimer = setInterval(fetchConversations, 5000);
+  pollTimer = setInterval(() => {
+    fetchConversations();
+    // 自动 AI 回复检查（与消息轮询同频）
+    processPendingAiReplies();
+  }, 5000);
 }
 
 function stopPolling() {

@@ -147,8 +147,27 @@ async function handleRequest(req, res) {
         lastMessage: c.messages.length > 0 ? c.messages[c.messages.length - 1].content : '',
         lastTime: c.messages.length > 0 ? c.messages[c.messages.length - 1].timestamp : null,
         unread: c.unread,
+        pendingAiReply: c.pendingAiReply || false,
       }));
       return sendJSON(res, 200, { conversations: list });
+    }
+
+    // ---- 获取待 AI 回复的会话（供 UI 轮询自动处理） ----
+    if (p === '/api/pending-ai-replies' && method === 'GET') {
+      const pending = [];
+      for (const conv of state.conversations.values()) {
+        if (conv.pendingAiReply) {
+          // 收集最近 10 条消息作为上下文
+          const recentMsgs = conv.messages.slice(-10);
+          pending.push({
+            convId: conv.id,
+            platform: conv.platform,
+            buyerName: conv.buyerName,
+            messages: recentMsgs,
+          });
+        }
+      }
+      return sendJSON(res, 200, { pending });
     }
 
     // ---- 会话消息 ----
@@ -182,6 +201,8 @@ async function handleRequest(req, res) {
         timestamp: Date.now(),
         aiGenerated: body.aiGenerated || false,
       });
+      // 清除 pendingAiReply 标记
+      conv.pendingAiReply = false;
       return sendJSON(res, 200, { ok: true });
     }
 
@@ -332,45 +353,15 @@ async function pollMessages() {
 }
 
 // ========== 自动回复 ==========
+// 自动模式下：不再由 service 直接生成回复，而是标记 pendingAiReply，
+// UI 轮询发现后自动调用 Code Worker 的 ai.generate 生成 AI 回复并发送。
 async function handleAutoReply(conv) {
   try {
-    // 自动回复模式下，由服务直接生成一条预设回复
-    // 注意：复杂的 AI 生成需要通过 UI → ai.generate 桥接（需用户确认）
-    // 这里先做一个简单的知识库匹配 + 默认回复的降级方案
-    const lastBuyerMsg = [...conv.messages].reverse().find(m => m.from === 'buyer');
-    if (!lastBuyerMsg) return;
-
-    let reply = '';
-
-    // 尝试从知识库匹配
-    if (state.knowledgeObj?.qa) {
-      for (const qa of state.knowledgeObj.qa) {
-        if (lastBuyerMsg.content.includes(qa.q)) {
-          reply = qa.a;
-          break;
-        }
-      }
-    }
-
-    // 未匹配到则使用默认回复
-    if (!reply) {
-      reply = '您好，您的消息已收到，客服正在处理中，请稍候~';
-    }
-
-    // 发送回复
-    const adapter = state.platforms.get(conv.platform)?.adapter;
-    if (adapter) {
-      await adapter.sendMessage(conv, reply);
-      conv.messages.push({
-        from: 'agent',
-        content: reply,
-        timestamp: Date.now(),
-        aiGenerated: false,
-      });
-      log(`自动回复 → ${conv.buyerName}: ${reply.substring(0, 50)}`);
-    }
+    // 标记该会话需要 AI 回复
+    conv.pendingAiReply = true;
+    log(`新买家消息 → ${conv.buyerName}，已标记为待 AI 回复`);
   } catch (err) {
-    log(`自动回复失败: ${err.message}`);
+    log(`标记 AI 回复失败: ${err.message}`);
   }
 }
 
