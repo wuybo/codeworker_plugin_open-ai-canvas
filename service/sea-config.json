@@ -1,5 +1,5 @@
 {
-  "main": "index.js",
+  "main": "sea-entry.js",
   "output": "sea-prep.blob",
   "disableExperimentalSEAWarning": true,
   "useCodeCache": true,

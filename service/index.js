@@ -107,6 +107,9 @@ function readBody(req) {
 function authenticate(req) {
   // 对非 OPTIONS 请求校验 token
   if (req.method === 'OPTIONS') return true;
+  // 健康检查和 token 获取端点不需要认证
+  const url = new URL(req.url, 'http://127.0.0.1');
+  if (url.pathname === '/api/health' || url.pathname === '/api/token') return true;
   const token = req.headers['x-plugin-token'];
   if (!state.token) return true; // token 未初始化时允许（首次启动）
   return token === state.token;
@@ -128,6 +131,11 @@ async function handleRequest(req, res) {
     // ---- 健康检查 ----
     if (p === '/api/health' && method === 'GET') {
       return sendJSON(res, 200, { ok: true, version: '0.1.0', uptime: process.uptime() });
+    }
+
+    // ---- 获取 token（UI 首次连接时调用） ----
+    if (p === '/api/token' && method === 'GET') {
+      return sendJSON(res, 200, { token: state.token });
     }
 
     // ---- 会话列表 ----

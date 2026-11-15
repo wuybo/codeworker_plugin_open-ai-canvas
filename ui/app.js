@@ -63,9 +63,27 @@ async function initServiceConnection() {
   settings = s;
   const port = s.servicePort || 17389;
   serviceBaseUrl = `http://127.0.0.1:${port}`;
-  // token 由 service 启动时写入插件存储，UI 读取后用于 API 认证
-  const tokenData = await callHost("plugin.storage.read", { key: "service-token" });
-  serviceToken = tokenData?.token || null;
+  // 先尝试从 plugin.storage 读之前缓存的 token
+  try {
+    const tokenData = await callHost("plugin.storage.read", { key: "service-token" });
+    serviceToken = tokenData?.token || null;
+  } catch (e) { serviceToken = null; }
+  // 如果没有缓存 token，尝试从 service 的 /api/token 端点获取
+  if (!serviceToken) {
+    try {
+      const resp = await fetch(`${serviceBaseUrl}/api/token`);
+      if (resp.ok) {
+        const data = await resp.json();
+        if (data.token) {
+          serviceToken = data.token;
+          // 缓存 token 到 plugin.storage
+          try {
+            await callHost("plugin.storage.write", { key: "service-token", value: { token: serviceToken } });
+          } catch (e) { /* ignore */ }
+        }
+      }
+    } catch (e) { /* service 可能还没启动 */ }
+  }
 }
 
 // 调用后台 service 的本地 API
