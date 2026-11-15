@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "id": "ecom-cs-bot",
+  "name": "电商客服自动对话助手",
+  "version": "0.1.0",
+  "description": "基于开源 ChatGPT-On-CS（AGPL-3.0）底层 CDP 注入逻辑改写的电商客服自动对话插件。可挂接千牛/抖店/拼多多等商家客户端，读取买家消息，调用 Code Worker 自带的 AI 生成回复，支持人工确认或自动回复。",
+  "author": "wuybo",
+  "type": "service",
+  "category": "浏览器",
+  "tags": ["电商", "客服", "自动回复", "AI"],
+  "minAppVersion": "0.2.2",
+  "permissions": [
+    "app.context.read",
+    "plugin.storage.read",
+    "plugin.storage.write",
+    "app.notification.show",
+    "ai.generate",
+    "conversation.create"
+  ],
+  "ui": {
+    "sidebar": [
+      {
+        "id": "main",
+        "label": "客服助手",
+        "icon": "💬",
+        "title": "电商客服自动对话助手",
+        "page": "ui/index.html"
+      }
+    ],
+    "composer": [
+      {
+        "id": "open-main",
+        "label": "客服助手",
+        "title": "打开电商客服自动对话助手",
+        "icon": "💬",
+        "action": "open-page",
+        "page": "main"
+      }
+    ]
+  },
+  "service": {
+    "executable": "service/ecom-cs-service.exe"
+  }
+}

@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>电商客服自动对话助手</title>
+  <link rel="stylesheet" href="./style.css">
+</head>
+<body>
+  <div id="app">
+    <!-- 顶部状态栏 -->
+    <header class="topbar">
+      <div class="topbar-left">
+        <span class="logo">💬 电商客服助手</span>
+        <span id="service-status" class="badge badge-off">服务未连接</span>
+      </div>
+      <div class="topbar-right">
+        <button id="btn-refresh" class="btn btn-sm" title="刷新">🔄</button>
+      </div>
+    </header>
+
+    <!-- Tab 导航 -->
+    <nav class="tabs">
+      <button class="tab active" data-tab="inbox">收件箱</button>
+      <button class="tab" data-tab="platforms">平台管理</button>
+      <button class="tab" data-tab="knowledge">知识库</button>
+      <button class="tab" data-tab="settings">设置</button>
+    </nav>
+
+    <!-- ========== 收件箱 ========== -->
+    <section id="tab-inbox" class="tab-panel active">
+      <div class="inbox-layout">
+        <!-- 会话列表 -->
+        <div class="inbox-sidebar">
+          <div class="inbox-search">
+            <input type="text" id="inbox-search-input" placeholder="搜索会话…" class="input">
+          </div>
+          <div id="conversation-list" class="conversation-list">
+            <div class="empty-hint">暂无会话</div>
+          </div>
+        </div>
+        <!-- 消息详情 -->
+        <div class="inbox-detail">
+          <div id="conversation-header" class="conversation-header">
+            <span class="conv-title">请选择左侧会话</span>
+            <span id="conv-platform" class="badge"></span>
+          </div>
+          <div id="message-list" class="message-list">
+            <div class="empty-hint">选择一个会话查看消息</div>
+          </div>
+          <!-- 回复区域 -->
+          <div class="reply-area">
+            <div class="reply-toolbar">
+              <button id="btn-ai-draft" class="btn btn-primary btn-sm" disabled>✨ AI 起草</button>
+              <button id="btn-send" class="btn btn-success btn-sm" disabled>发送</button>
+              <label class="switch-label">
+                <input type="checkbox" id="auto-reply-toggle">
+                <span>自动回复</span>
+              </label>
+            </div>
+            <textarea id="reply-text" class="reply-text" placeholder="输入回复内容，或点击「AI 起草」让 Code Worker AI 生成…" disabled></textarea>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ========== 平台管理 ========== -->
+    <section id="tab-platforms" class="tab-panel">
+      <div class="panel-header">
+        <h2>平台管理</h2>
+        <p class="panel-desc">配置要挂接的电商客服平台。启动后插件会通过 CDP 协议连接到对应商家客户端的 WebView。</p>
+      </div>
+      <div id="platform-list" class="platform-list">
+        <!-- 动态填充 -->
+      </div>
+    </section>
+
+    <!-- ========== 知识库 ========== -->
+    <section id="tab-knowledge" class="tab-panel">
+      <div class="panel-header">
+        <h2>知识库</h2>
+        <p class="panel-desc">配置 AI 回复时参考的商品信息、话术模板和常见问答。数据存储在插件本地。</p>
+      </div>
+      <div class="knowledge-editor">
+        <div class="knowledge-toolbar">
+          <button id="btn-add-qa" class="btn btn-sm">+ 添加问答</button>
+          <button id="btn-save-knowledge" class="btn btn-primary btn-sm">保存</button>
+        </div>
+        <textarea id="knowledge-text" class="knowledge-text" placeholder='示例格式（JSON）：&#10;{&#10;  "qa": [&#10;    {"q": "发货时间", "a": "下单后48小时内发货"},&#10;    {"q": "退换货政策", "a": "7天无理由退换货"}&#10;  ],&#10;  "products": ["商品A", "商品B"]&#10;}'></textarea>
+      </div>
+    </section>
+
+    <!-- ========== 设置 ========== -->
+    <section id="tab-settings" class="tab-panel">
+      <div class="panel-header">
+        <h2>设置</h2>
+      </div>
+      <div class="settings-form">
+        <div class="form-row">
+          <label>AI 回复风格</label>
+          <select id="setting-style" class="input">
+            <option value="friendly">友好亲切</option>
+            <option value="professional">专业正式</option>
+            <option value="concise">简洁高效</option>
+          </select>
+        </div>
+        <div class="form-row">
+          <label>自动回复延迟（秒）</label>
+          <input type="number" id="setting-delay" class="input" min="0" max="60" value="3">
+        </div>
+        <div class="form-row">
+          <label>CDP 调试端口</label>
+          <input type="number" id="setting-cdp-port" class="input" min="1024" max="65535" value="9222">
+        </div>
+        <div class="form-row">
+          <label>服务端口</label>
+          <input type="number" id="setting-service-port" class="input" min="1024" max="65535" value="17389">
+        </div>
+        <div class="form-row">
+          <button id="btn-save-settings" class="btn btn-primary">保存设置</button>
+          <button id="btn-restart-service" class="btn">重启服务</button>
+        </div>
+        <div class="form-row">
+          <div class="warning-box">
+            <strong>⚠️ 合规提示</strong>
+            <p>本插件通过 CDP 协议挂接电商商家客户端读取/发送消息，属于第三方自动化工具。各电商平台（淘宝/拼多多/抖音等）用户协议可能禁止此类行为，<strong>存在封店/封号风险</strong>。请在了解风险后使用，建议优先使用人工确认模式。</p>
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="about-box">
+            <strong>关于</strong>
+            <p>版本 0.1.0 | 基于 <a href="https://github.com/cs-lazy-tools/ChatGPT-On-CS" target="_blank">ChatGPT-On-CS</a>（AGPL-3.0）改写</p>
+            <p>源码仓库：<a href="https://github.com/wuybo/codeworker_plugin_open-ai-canvas" target="_blank">github.com/wuybo/codeworker_plugin_open-ai-canvas</a></p>
+          </div>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script src="./app.js"></script>
+</body>
+</html>

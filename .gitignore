@@ -1,0 +1,36 @@
+# 构建产物
+dist/
+*.cwplugin
+*.zip
+
+# SEA 打包中间文件
+service/sea-prep.blob
+service/ecom-cs-service.exe
+
+# Node
+node_modules/
+package-lock.json
+
+# IDE
+.vscode/
+.idea/
+
+# 系统
+Thumbs.db
+.DS_Store
+
+# 日志
+*.log
+
+# 排除目录中的其他无关项目（非本插件代码）
+CodeWorker插件开发套件/
+CodeWorker插件开发套件.zip
+agent-display/
+cosyvoice-voice-clone/
+demo-license-flow/
+demo-noprice/
+flowtest-public-download/
+flowtest-text-tools/
+sku-batch-replace/
+sku-源码备份/
+teacher-workstation/

@@ -1,0 +1,14 @@
+{
+  "name": "ecom-cs-service",
+  "version": "0.1.0",
+  "description": "电商客服自动对话助手 — 后台服务（基于 ChatGPT-On-CS AGPL-3.0 改写）",
+  "main": "index.js",
+  "author": "wuybo",
+  "license": "AGPL-3.0",
+  "scripts": {
+    "start": "node index.js",
+    "build": "node scripts/build-sea.js",
+    "package": "powershell -ExecutionPolicy Bypass -File scripts/build.ps1"
+  },
+  "dependencies": {}
+}
